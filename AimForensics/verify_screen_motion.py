@@ -1,5 +1,5 @@
 """
-驗證畫面位移軌跡（AI 工具協助撰寫）。放在 app.py、screen_motion.py 同一個資料夾執行：
+驗證畫面位移軌跡。放在 app.py、screen_motion.py 同一個資料夾執行：
 
     python verify_screen_motion.py
 

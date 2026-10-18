@@ -30,7 +30,7 @@ streamlit run app.py
 ## 版本
 
 - **v1（第一個 commit）**：科展時使用的版本。
-- **v2（2026 年 10 月，AI 工具協助）**：新增 `screen_motion.py`，預設改用畫面位移當作軌跡；中心法與邊緣法保留作對照；修正抽樣時的時間步長。`python verify_screen_motion.py` 會產生兩支答案已知的測試影片並輸出 `verify_screen_motion.json`：
+- **v2（2026 年 10 月）**：新增 `screen_motion.py`，預設改用畫面位移當作軌跡；中心法與邊緣法保留作對照；修正抽樣時的時間步長。`python verify_screen_motion.py` 會產生兩支答案已知的測試影片並輸出 `verify_screen_motion.json`：
 
 | | 畫面不動 | 每格右移 5 像素 |
 |---|---|---|
