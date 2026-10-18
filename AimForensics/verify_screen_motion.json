@@ -1,0 +1,36 @@
+[
+  {
+    "video": "static.avi",
+    "frames": 120,
+    "resolution": [
+      320,
+      240
+    ],
+    "mean_dx_dy": [
+      2.842170943040401e-14,
+      -9.521272659185342e-13
+    ],
+    "max_component_error_px": 9.521272659185342e-13,
+    "old_suspicion": 0.75,
+    "new_suspicion": 0.7499999999998979,
+    "profile_seconds": 0.45758463599999993,
+    "pipeline_frames_per_second": 262.24656721210374
+  },
+  {
+    "video": "right5.avi",
+    "frames": 120,
+    "resolution": [
+      320,
+      240
+    ],
+    "mean_dx_dy": [
+      4.982919246685531,
+      0.0008084900295224239
+    ],
+    "max_component_error_px": 0.027287929546332634,
+    "old_suspicion": 0.75,
+    "new_suspicion": 0.31669412737308994,
+    "profile_seconds": 0.458964642,
+    "pipeline_frames_per_second": 261.4580493109097
+  }
+]

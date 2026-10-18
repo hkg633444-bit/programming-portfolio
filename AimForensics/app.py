@@ -2273,7 +2273,7 @@ def init_session_state():
 # ==============================================================================
 
 def extract_trajectory_from_video(video_path: str, frame_interval: int = 1,
-                                   detection_method: str = 'center',
+                                   detection_method: str = 'phase',
                                    progress_callback=None) -> Tuple[np.ndarray, np.ndarray, List[np.ndarray]]:
     """
     從影片檔案提取準心軌跡。
@@ -2287,6 +2287,13 @@ def extract_trajectory_from_video(video_path: str, frame_interval: int = 1,
     回傳：
         (positions, timestamps, sample_frames) 的元組
     """
+    if detection_method == 'phase':
+        from screen_motion import extract_screen_motion
+        positions, timestamps, samples, effective_fps = extract_screen_motion(
+            video_path, frame_interval, progress_callback)
+        st.session_state.trajectory_analyzer.fps = effective_fps
+        st.session_state.trajectory_analyzer.dt = 1.0 / effective_fps
+        return positions, timestamps, samples
     detector = st.session_state.crosshair_detector
 
     cap = cv2.VideoCapture(video_path)
@@ -2304,7 +2311,8 @@ def extract_trajectory_from_video(video_path: str, frame_interval: int = 1,
         total_frames = 0
 
     # 更新分析器 FPS
-    st.session_state.trajectory_analyzer.fps = fps
+    st.session_state.trajectory_analyzer.fps = fps / frame_interval
+    st.session_state.trajectory_analyzer.dt = frame_interval / fps
 
     positions = []
     timestamps = []
@@ -2448,11 +2456,12 @@ def render_sidebar():
         )
         
         detection_method = st.selectbox(
-            "Crosshair Detection Method",
-            options=['center', 'edge'],
+            "Trajectory Extraction Method",
+            options=['phase', 'center', 'edge'],
             format_func=lambda x: {
-                'center': 'Screen Center (Standard FPS)',
-                'edge': 'Edge Detection (Custom Crosshair)'
+                'phase': 'Screen Motion (Phase Correlation)',
+                'center': 'Screen Center (Legacy Comparison Only)',
+                'edge': 'Edge Detection (Legacy Comparison Only)'
             }[x]
         )
         
@@ -2480,7 +2489,8 @@ def render_sidebar():
 def render_analyze_tab(settings: Dict):
     """渲染影片分析頁籤。"""
     st.markdown("## Video Analysis")
-    st.markdown("Upload FPS gameplay footage to analyze crosshair trajectory and aiming behavior.")
+    st.markdown("Upload FPS gameplay footage to estimate accumulated screen-motion trajectories.")
+    st.info("畫面位移估計不是真實滑鼠軌跡或視角角度。角色移動、HUD、後座力和切鏡可能干擾結果；現有可疑度僅供研究比較，不是作弊機率。舊中心法僅保留作修正前對照。")
     
     uploaded_file = st.file_uploader(
         "Upload Gameplay Video",
@@ -2520,7 +2530,7 @@ def render_analyze_tab(settings: Dict):
 
             if st.button("Start Analysis", type="primary", use_container_width=True):
                 try:
-                    with st.spinner("Extracting crosshair trajectory..."):
+                    with st.spinner("Extracting trajectory..."):
                         progress_bar = st.progress(0)
 
                         def update_progress(p):
@@ -2561,8 +2571,15 @@ def render_analyze_tab(settings: Dict):
 
 def extract_trajectory_window(video_path: str, start_frame: int, end_frame: int,
                               frame_interval: int = 1,
-                              detection_method: str = 'center') -> Tuple[np.ndarray, np.ndarray]:
+                              detection_method: str = 'phase') -> Tuple[np.ndarray, np.ndarray]:
     """從影片的指定影格範圍提取準心軌跡。"""
+    if detection_method == 'phase':
+        from screen_motion import extract_screen_motion
+        positions, timestamps, _, effective_fps = extract_screen_motion(
+            video_path, frame_interval, start_frame=start_frame, end_frame=end_frame)
+        st.session_state.trajectory_analyzer.fps = effective_fps
+        st.session_state.trajectory_analyzer.dt = 1.0 / effective_fps
+        return positions, timestamps
     detector = st.session_state.crosshair_detector
 
     cap = cv2.VideoCapture(video_path)
@@ -2570,7 +2587,11 @@ def extract_trajectory_window(video_path: str, start_frame: int, end_frame: int,
         raise ValueError("無法開啟影片檔案")
 
     fps = cap.get(cv2.CAP_PROP_FPS)
-    st.session_state.trajectory_analyzer.fps = fps
+    if not np.isfinite(fps) or fps <= 0:
+        cap.release()
+        raise ValueError("影片 FPS 無效")
+    st.session_state.trajectory_analyzer.fps = fps / frame_interval
+    st.session_state.trajectory_analyzer.dt = frame_interval / fps
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
@@ -2933,6 +2954,7 @@ def render_analysis_results(results: Dict):
                 per_frame_suspicion[scaled_start:scaled_end] = results['segment_scores'][i].overall_suspicion
         
         fig = visualizer.plot_trajectory_2d(positions, results['timestamps'], per_frame_suspicion)
+        fig.update_layout(title="Extracted Trajectory — Screen Motion / Legacy Comparison")
         st.plotly_chart(fig, use_container_width=True)
     
     with tab2:
