@@ -20,23 +20,22 @@ streamlit run app.py
 | 部分 | 做什麼 |
 |---|---|
 | `CrosshairDetector`（app.py） | 準心偵測：中心法、邊緣法（Canny 邊緣偵測＋機率霍夫直線） |
-| `screen_motion.py` | 用相鄰兩格的相位相關（`cv2.phaseCorrelate`）估計整個畫面的平移，累加成軌跡（v2 的預設方法） |
+| `screen_motion.py` | 用相鄰兩格的相位相關（`cv2.phaseCorrelate`）估計整個畫面的平移，累加成軌跡（預設的軌跡擷取方法） |
 | `TrajectoryAnalyzer` | 速度、加速度、角速度（atan2）、抖動（原始座標減去高斯平滑後的殘差）、平滑度、方向改變次數；每 60 格切一段，整理成 10 維特徵 |
 | `AnomalyDetector` | 黏著度、瞬間轉向、平滑度異常、方向熵四項指標加權成可疑度；可用邏輯迴歸（Z-score、L-BFGS）從標註資料學權重 |
 | `SequenceModel` | Keras 模型：四層 Conv1D（批次正規化、最大池化、Dropout）＋兩層雙向 LSTM＋全連接層，Softmax 輸出兩類 |
 | `AcademicVisualizer` | Plotly 圖表：軌跡、速度、角速度、速度分佈、特徵比較、訓練曲線 |
 | `render_*`、`main` | Streamlit 介面：影片分析、模型訓練、權重學習、資料匯出、外觀五個頁籤 |
 
-## 版本
+## 科展後的更新（2026 年 10 月）
 
-- **v1（第一個 commit）**：科展時使用的版本。
-- **v2（2026 年 10 月）**：新增 `screen_motion.py`，預設改用畫面位移當作軌跡；中心法與邊緣法保留作對照；修正抽樣時的時間步長。`python verify_screen_motion.py` 會產生兩支答案已知的測試影片並輸出 `verify_screen_motion.json`：
+新增 `screen_motion.py`，預設改用畫面位移當作軌跡；中心法與邊緣法保留作對照；修正抽樣時的時間步長。`python verify_screen_motion.py` 會產生兩支答案已知的測試影片並輸出 `verify_screen_motion.json`：
 
 | | 畫面不動 | 每格右移 5 像素 |
 |---|---|---|
 | 平均每格位移 (dx, dy) | (0.000, 0.000) | (4.983, 0.001) |
 | 單格最大誤差 | < 10⁻¹² 像素 | 0.027 像素 |
-| 可疑度（v1 中心法 → v2 畫面位移） | 0.750 → 0.750 | 0.750 → 0.317 |
+| 可疑度（中心法 → 畫面位移） | 0.750 → 0.750 | 0.750 → 0.317 |
 
 ## 目前的限制與下一步
 
