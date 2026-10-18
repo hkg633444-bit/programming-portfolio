@@ -1,0 +1,10 @@
+# 依 app.py 的 import 整理；在 Replit 的 Shell 執行 `pip freeze > requirements.txt` 可換成實際版本
+streamlit
+numpy
+pandas
+opencv-python
+Pillow
+scipy
+scikit-learn
+tensorflow
+plotly

@@ -1,0 +1,20 @@
+# 影片與大型檔案不要上傳（GitHub 單檔上限 100 MB，網頁上傳 25 MB）
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+# 模型與暫存
+saved_models/
+.env
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+# 對拍時產生的執行檔與測資
+ytp-2026-final/*/sol
+ytp-2026-final/*/brute
+ytp-2026-final/*/in.txt
+ytp-2026-final/*/out_*.txt
+*.exe
+*.o
+a.out
