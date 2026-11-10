@@ -42,6 +42,10 @@ def _save_uploaded_to_tempfile(uploaded_file, suffix: str = '.mp4') -> str:
         except Exception:
             pass
         shutil.copyfileobj(uploaded_file, tmp, length=1024 * 1024)  # 1MB chunks
+    except Exception:
+        tmp.close()
+        os.unlink(tmp.name)
+        raise
     finally:
         tmp.close()
     return tmp.name
@@ -72,7 +76,6 @@ from plotly.subplots import make_subplots
 
 # Scikit-learn 機器學習工具
 from sklearn.metrics import confusion_matrix, classification_report
-from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 
@@ -1559,16 +1562,25 @@ class AnomalyDetector:
         if len(unique) < 2:
             raise ValueError("標籤必須包含至少兩個類別（0=人類, 1=自瞄）")
         
-        # 劃分訓練集與測試集（分層抽樣確保類別比例一致）
-        if len(X) < 5 or min(counts) < 2:
-            # 資料太少時不分割，使用全部資料訓練
-            X_train, X_test, y_train, y_test = X, X, y, y
-            split_warning = "資料量不足以分割測試集，使用全部資料進行訓練與評估"
+        groups = [d.get('_source_group') for d in feature_data]
+        split_audit = None
+        if any(g is not None for g in groups):
+            if not all(g is not None for g in groups):
+                raise ValueError("影片資料不可混入無來源的手動／合成資料；請清空後分開訓練")
+            from training_pipeline import grouped_split
+            parts = grouped_split(y, groups, three_way=False, test_ratio=test_size)
+            train_idx, test_idx = parts['train'], parts['test']
+            X_train, X_test = X[train_idx], X[test_idx]
+            y_train, y_test = y[train_idx], y[test_idx]
+            split_audit = {
+                'train_sources': sorted(set(np.asarray(groups)[train_idx])),
+                'test_sources': sorted(set(np.asarray(groups)[test_idx])),
+                'source_intersection': [],
+                'train_windows': len(train_idx), 'test_windows': len(test_idx)
+            }
+            split_warning = "按錄影來源分組測試；視窗重疊，不能視為獨立觀測"
         else:
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=test_size, random_state=42, stratify=y
-            )
-            split_warning = None
+            raise ValueError("只接受由影片提取且附來源分組的資料，請重新上傳影片")
         
         # 特徵標準化（Z-score 正規化）
         # 確保各特徵在相同尺度上比較，避免數值範圍差異影響係數大小
@@ -1661,7 +1673,8 @@ class AnomalyDetector:
                 'n_aimbot': int(np.sum(y == 1)),
             },
             'feature_names': feature_names,
-            'split_warning': split_warning
+            'split_warning': split_warning,
+            'split_audit': split_audit
         }
         
         return results
@@ -2228,24 +2241,6 @@ class AcademicVisualizer:
 # ==============================================================================
 # SESSION STATE 初始化
 # ==============================================================================
-
-def _generate_mock_training_data():
-    import random as _rnd
-    _rnd.seed(77)
-    _m = {'sequences': [], 'labels': [], 'video_info': []}
-    for i in range(30):
-        s = _rnd.randint(3, 12)
-        for _ in range(s):
-            _m['sequences'].append([_rnd.uniform(80,200),_rnd.uniform(100,400),_rnd.uniform(500,20000),_rnd.uniform(1,5),_rnd.uniform(0.3,0.7),_rnd.randint(5,25),_rnd.uniform(50,150),_rnd.uniform(0.5,3.0),_rnd.uniform(1,4),_rnd.uniform(0.3,0.8)])
-            _m['labels'].append(0)
-        _m['video_info'].append({'filename':f'human_gameplay_{i+1:02d}.mp4','label':'human','segments':s,'timestamp':f'2026-02-23T{10+i//6}:{(i%6)*10:02d}:00'})
-    for i in range(30):
-        s = _rnd.randint(3, 12)
-        for _ in range(s):
-            _m['sequences'].append([_rnd.uniform(200,400),_rnd.uniform(300,800),_rnd.uniform(500,10000),_rnd.uniform(0.1,0.5),_rnd.uniform(0.85,0.98),_rnd.randint(1,6),_rnd.uniform(200,600),_rnd.uniform(0.1,0.5),_rnd.uniform(0.5,1.5),_rnd.uniform(0.85,0.99)])
-            _m['labels'].append(1)
-        _m['video_info'].append({'filename':f'aimbot_sample_{i+1:02d}.mp4','label':'aimbot','segments':s,'timestamp':f'2026-02-23T{14+i//6}:{(i%6)*10:02d}:00'})
-    return _m
 
 def init_session_state():
     """初始化 Streamlit session state 變數。"""
@@ -3024,179 +3019,9 @@ def render_analysis_results(results: Dict):
 
 
 def render_train_tab(settings: Dict):
-    """渲染模型訓練頁籤。"""
-    st.markdown("## Train Model")
-    st.markdown("""
-    Upload labeled gameplay videos to train the CNN+LSTM temporal model.
-    The model learns to distinguish human players from aimbot users.
-    """)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("### Add Training Data")
-        
-        label = st.radio(
-            "Video Label",
-            options=['human', 'aimbot'],
-            format_func=lambda x: 'Human Player' if x == 'human' else 'Aimbot User',
-            horizontal=True
-        )
-        
-        train_file = st.file_uploader(
-            "Upload Training Video",
-            type=['mp4', 'avi', 'mov', 'mkv', 'webm'],
-            key='train_upload'
-        )
-        
-        if train_file and st.button("Add to Training Set"):
-            video_path = _save_uploaded_to_tempfile(train_file, suffix='.mp4')
-            
-            with st.spinner("Processing video..."):
-                positions, timestamps, _ = extract_trajectory_from_video(
-                    video_path,
-                    frame_interval=settings['frame_interval'],
-                    detection_method=settings['detection_method']
-                )
-                
-                analyzer = st.session_state.trajectory_analyzer
-                segments = analyzer.segment_trajectory(positions, timestamps, window_size=60, overlap=30)
-                
-                for segment in segments:
-                    if segment.features is not None:
-                        feature_vector = analyzer.get_feature_vector(segment.features)
-                        st.session_state.training_data['sequences'].append(feature_vector)
-                        st.session_state.training_data['labels'].append(0 if label == 'human' else 1)
-                
-                st.session_state.training_data['video_info'].append({
-                    'filename': train_file.name,
-                    'label': label,
-                    'segments': len(segments),
-                    'timestamp': datetime.now().isoformat()
-                })
-            
-            os.unlink(video_path)
-            st.success(f"Added {len(segments)} training samples")
-            st.rerun()
-    
-    with col2:
-        st.markdown("### Training Set Status")
-        
-        labels = st.session_state.training_data['labels']
-        human_count = labels.count(0)
-        aimbot_count = labels.count(1)
-        
-        st.metric("Human Samples", human_count)
-        st.metric("Aimbot Samples", aimbot_count)
-        st.metric("Total Samples", len(labels))
-        
-        if st.session_state.training_data['video_info']:
-            with st.expander("Uploaded Videos"):
-                for info in st.session_state.training_data['video_info']:
-                    icon = '👤' if info['label'] == 'human' else '🤖'
-                    st.text(f"{icon} {info['filename']} ({info['segments']} samples)")
-    
-    st.markdown("---")
-    st.markdown("### Start Training")
-    
-    min_samples = 20
-    can_train = len(labels) >= min_samples and human_count > 0 and aimbot_count > 0
-    
-    if not can_train:
-        st.warning(f"Need at least {min_samples} samples (both classes) to start training")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        epochs = st.slider("Epochs", 10, 100, 30)
-    with col2:
-        batch_size = st.selectbox("Batch Size", [16, 32, 64], index=1)
-    with col3:
-        learning_rate = st.select_slider("Learning Rate", options=[0.0001, 0.0005, 0.001, 0.005], value=0.001)
-    
-    if st.button("Start Training", disabled=not can_train, type="primary", use_container_width=True):
-        sequences = np.array(st.session_state.training_data['sequences'])
-        labels_arr = np.array(st.session_state.training_data['labels'])
-        
-        config = TrainingConfig(
-            sequence_length=1,
-            feature_dim=sequences.shape[1],
-            epochs=epochs,
-            batch_size=batch_size,
-            learning_rate=learning_rate
-        )
-        
-        model = SequenceModel(config)
-        model.build_model()
-        
-        from tensorflow.keras.utils import to_categorical
-        y_onehot = to_categorical(labels_arr, num_classes=2)
-        
-        sequences_3d = sequences.reshape(sequences.shape[0], 1, sequences.shape[1])
-        
-        X_train, X_val, y_train, y_val = train_test_split(
-            sequences_3d, y_onehot, test_size=0.2, stratify=labels_arr, random_state=42
-        )
-        
-        with st.spinner("Training..."):
-            progress_text = st.empty()
-
-            class StreamlitCallback(tf.keras.callbacks.Callback):
-                def on_epoch_end(self, epoch, logs=None):
-                    progress_text.text(
-                        f"Epoch {epoch+1}/{epochs} - "
-                        f"Loss: {logs['loss']:.4f} - "
-                        f"Acc: {logs['accuracy']:.4f} - "
-                        f"Val Loss: {logs.get('val_loss', 0):.4f} - "
-                        f"Val Acc: {logs.get('val_accuracy', 0):.4f}"
-                    )
-
-            try:
-                history = model.model.fit(
-                    X_train, y_train,
-                    epochs=epochs,
-                    batch_size=batch_size,
-                    validation_data=(X_val, y_val),
-                    callbacks=[StreamlitCallback()],
-                    verbose=0
-                )
-            except tf.errors.ResourceExhaustedError as e:
-                st.error("❌ 訓練失敗：GPU/記憶體不足 (OOM)。"
-                         "請縮小 Batch Size、減少訓練樣本，或改用較小的序列長度。")
-                st.exception(e)
-                return
-            except (ValueError, tf.errors.InvalidArgumentError) as e:
-                st.error(f"❌ 訓練失敗：資料形狀或參數錯誤。請檢查輸入樣本是否足夠、標籤是否平衡。\n\n{e}")
-                return
-            except Exception as e:
-                st.error(f"❌ 訓練失敗（未預期錯誤）：{type(e).__name__}: {e}")
-                st.exception(e)
-                return
-
-        st.session_state.sequence_model = model
-        st.session_state.model_trained = True
-        st.session_state.training_history = history.history
-
-        st.success("Training Complete!")
-
-        visualizer = st.session_state.visualizer
-        fig = visualizer.plot_training_history(history.history)
-        st.plotly_chart(fig, use_container_width=True)
-
-        final_acc = history.history['accuracy'][-1]
-        final_val_acc = history.history['val_accuracy'][-1]
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Training Accuracy", f"{final_acc:.1%}")
-        with col2:
-            st.metric("Validation Accuracy", f"{final_val_acc:.1%}")
-    
-    if st.session_state.training_history:
-        st.markdown("### Training History")
-        visualizer = st.session_state.visualizer
-        fig = visualizer.plot_training_history(st.session_state.training_history)
-        st.plotly_chart(fig, use_container_width=True)
+    from training_ui import render
+    render(extract_trajectory_from_video, _save_uploaded_to_tempfile,
+           SequenceModel, TrainingConfig)
 
 
 def render_lr_tab(settings):
@@ -3230,12 +3055,12 @@ def render_lr_tab(settings):
         st.markdown("### Prepare Labeled Feature Data")
         st.markdown("""
         Add labeled feature samples for logistic regression training.
-        You can add data from **analyzed videos** or enter **manual feature values**.
+        Only features extracted from uploaded videos are accepted.
         """)
         
         data_method = st.radio(
             "Data Input Method",
-            ['From Analyzed Video', 'Manual Input', 'Generate Synthetic Data'],
+            ['From Analyzed Video'],
             horizontal=True,
             key='lr_data_method'
         )
@@ -3259,128 +3084,58 @@ def render_lr_tab(settings):
                 type=['mp4', 'avi', 'mov', 'mkv', 'webm'],
                 key='lr_video_upload'
             )
+            lr_source = st.text_input("錄影來源代號（相關剪輯請填相同值）", key="lr_source")
+            st.caption("固定 2 秒視窗、1 秒步長；至少每類 2 個獨立來源。")
             
             if lr_video and st.button("Extract Features & Add", key='lr_extract_btn'):
+                from training_pipeline import video_id
+                digest = video_id(lr_video.getvalue())
+                source_group = "source:" + video_id(lr_source.strip().encode()) if lr_source.strip() else digest
+                if any(info.get('content_id') == digest for info in st.session_state.lr_sample_info):
+                    st.error("影片內容已加入，不能重複提取")
+                    return
                 video_path = _save_uploaded_to_tempfile(lr_video, suffix='.mp4')
                 
-                with st.spinner("Extracting trajectory features..."):
-                    positions, timestamps, _ = extract_trajectory_from_video(
-                        video_path,
-                        frame_interval=settings['frame_interval'],
-                        detection_method=settings['detection_method']
-                    )
-                    
-                    analyzer = st.session_state.trajectory_analyzer
-                    detector = st.session_state.anomaly_detector
-                    segments = analyzer.segment_trajectory(positions, timestamps, window_size=60, overlap=30)
-                    
-                    added = 0
-                    for segment in segments:
-                        if segment.features is not None:
-                            scores = detector.analyze_segment(segment)
-                            
-                            entropy_anomaly = max(0, 0.6 - scores.direction_entropy) / 0.6 if scores.direction_entropy < 0.6 else 0
-                            
-                            feature_dict = {
-                                'stickiness': scores.stickiness_index,
-                                'snap_score': scores.snap_score,
-                                'smoothness_anomaly': scores.smoothness_anomaly,
-                                'entropy_anomaly': entropy_anomaly
-                            }
-                            
-                            st.session_state.lr_feature_data.append(feature_dict)
-                            st.session_state.lr_labels.append(0 if lr_label == 'human' else 1)
-                            added += 1
-                    
+                try:
+                    with st.spinner("Extracting trajectory features..."):
+                        positions, timestamps, _ = extract_trajectory_from_video(
+                            video_path, frame_interval=1, detection_method='phase')
+                        analyzer = st.session_state.trajectory_analyzer
+                        detector = st.session_state.anomaly_detector
+                        effective_fps = analyzer.fps
+                        window_size = max(4, round(2.0 * effective_fps))
+                        step = max(1, round(effective_fps))
+                        segments = analyzer.segment_trajectory(
+                            positions, timestamps, window_size=window_size,
+                            overlap=window_size-step)
+                        extracted = []
+                        for segment in segments:
+                            if segment.features is not None:
+                                scores = detector.analyze_segment(segment)
+                                extracted.append({
+                                    '_source_group': source_group,
+                                    'stickiness': scores.stickiness_index,
+                                    'snap_score': scores.snap_score,
+                                    'smoothness_anomaly': scores.smoothness_anomaly,
+                                    'entropy_anomaly': max(0, 0.6 - scores.direction_entropy) / 0.6
+                                })
+                        if not extracted:
+                            raise ValueError("影片不足一個完整視窗，沒有新增訓練樣本")
+                    added = len(extracted)
+                    st.session_state.lr_feature_data.extend(extracted)
+                    st.session_state.lr_labels.extend([0 if lr_label == 'human' else 1] * added)
                     st.session_state.lr_sample_info.append({
+                        'content_id': digest,
                         'filename': lr_video.name,
                         'label': lr_label,
                         'samples': added
                     })
-                
-                os.unlink(video_path)
+                except Exception as exc:
+                    st.error(f"影片特徵提取失敗，未新增樣本：{exc}")
+                    return
+                finally:
+                    os.unlink(video_path)
                 st.success(f"Extracted {added} feature samples from video")
-                st.rerun()
-        
-        elif data_method == 'Manual Input':
-            st.markdown("Enter feature values manually (useful for testing or adding known reference data).")
-            
-            ml_col1, ml_col2 = st.columns(2)
-            with ml_col1:
-                m_stickiness = st.slider("Stickiness Index", 0.0, 1.0, 0.5, 0.01, key='m_stick')
-                m_snap = st.slider("Snap Score", 0.0, 1.0, 0.3, 0.01, key='m_snap')
-            with ml_col2:
-                m_smooth = st.slider("Smoothness Anomaly", 0.0, 1.0, 0.3, 0.01, key='m_smooth')
-                m_entropy = st.slider("Entropy Anomaly", 0.0, 1.0, 0.2, 0.01, key='m_entropy')
-            
-            m_label = st.radio("Label", ['Human (0)', 'Aimbot (1)'], horizontal=True, key='m_label')
-            
-            if st.button("Add Manual Sample", key='lr_manual_add'):
-                feature_dict = {
-                    'stickiness': m_stickiness,
-                    'snap_score': m_snap,
-                    'smoothness_anomaly': m_smooth,
-                    'entropy_anomaly': m_entropy
-                }
-                label_val = 0 if 'Human' in m_label else 1
-                st.session_state.lr_feature_data.append(feature_dict)
-                st.session_state.lr_labels.append(label_val)
-                st.session_state.lr_sample_info.append({
-                    'filename': 'manual_input',
-                    'label': 'human' if label_val == 0 else 'aimbot',
-                    'samples': 1
-                })
-                st.success("Added 1 manual sample")
-                st.rerun()
-        
-        else:  # Generate Synthetic Data
-            st.markdown("""
-            Generate synthetic training data based on known human and aimbot behavioral distributions.
-            This is useful for **demonstration and testing** when real labeled data is not available.
-            
-            **Human distribution**: Based on neuromuscular control characteristics  
-            **Aimbot distribution**: Based on algorithmic aim assistance patterns
-            """)
-            
-            syn_col1, syn_col2 = st.columns(2)
-            with syn_col1:
-                n_human = st.number_input("Number of Human Samples", 10, 500, 50, key='syn_human')
-            with syn_col2:
-                n_aimbot = st.number_input("Number of Aimbot Samples", 10, 500, 50, key='syn_aimbot')
-            
-            noise_level = st.slider("Noise Level", 0.0, 1.0, 0.3, 0.05, 
-                                     help="Higher = more realistic variation", key='syn_noise')
-            
-            if st.button("Generate Synthetic Data", key='lr_syn_btn', type='primary'):
-                np.random.seed(42)
-                
-                for _ in range(n_human):
-                    feature_dict = {
-                        'stickiness': np.clip(np.random.normal(0.45, 0.15 * (1 + noise_level)), 0, 1),
-                        'snap_score': np.clip(np.random.exponential(0.1) * (1 + noise_level * 0.5), 0, 0.8),
-                        'smoothness_anomaly': np.clip(np.random.normal(0.3, 0.15 * (1 + noise_level)), 0, 1),
-                        'entropy_anomaly': np.clip(np.random.exponential(0.08) * (1 + noise_level * 0.3), 0, 0.5)
-                    }
-                    st.session_state.lr_feature_data.append(feature_dict)
-                    st.session_state.lr_labels.append(0)
-                
-                for _ in range(n_aimbot):
-                    feature_dict = {
-                        'stickiness': np.clip(np.random.normal(0.85, 0.1 * (1 + noise_level)), 0.3, 1),
-                        'snap_score': np.clip(np.random.normal(0.7, 0.15 * (1 + noise_level)), 0.2, 1),
-                        'smoothness_anomaly': np.clip(np.random.normal(0.75, 0.12 * (1 + noise_level)), 0.2, 1),
-                        'entropy_anomaly': np.clip(np.random.normal(0.6, 0.15 * (1 + noise_level)), 0.1, 1)
-                    }
-                    st.session_state.lr_feature_data.append(feature_dict)
-                    st.session_state.lr_labels.append(1)
-                
-                st.session_state.lr_sample_info.append({
-                    'filename': f'synthetic_{n_human}h_{n_aimbot}a',
-                    'label': 'mixed',
-                    'samples': n_human + n_aimbot
-                })
-                
-                st.success(f"Generated {n_human} human + {n_aimbot} aimbot synthetic samples")
                 st.rerun()
         
         # 顯示目前資料集狀態
@@ -3481,6 +3236,8 @@ def render_lr_tab(settings):
             st.info("No training results yet. Train the model first.")
         else:
             results = st.session_state.lr_results
+            if results.get('split_audit'):
+                st.json(results['split_audit'])
             
             if results.get('split_warning'):
                 st.warning(results['split_warning'])
@@ -3681,6 +3438,9 @@ def render_export_tab():
         return
     
     results = st.session_state.analysis_results
+    if results.get('status') == 'insufficient' or results.get('features') is None:
+        st.warning("分析資料不足，沒有可匯出的有效結果。請重新上傳可分析的影片。")
+        return
     
     st.markdown("### Available Export Formats")
     
@@ -3713,6 +3473,9 @@ def render_export_tab():
         st.caption("Complete structured data")
         
         export_data = {
+            'measurement': 'estimated_screen_translation_or_legacy_crosshair_position',
+            'scoring': 'heuristic_rules_not_calibrated_cheating_probability',
+            'limitation': 'Temporal training models are not automatically used by this analysis page.',
             'analysis_timestamp': datetime.now().isoformat(),
             'classification': results['classification'],
             'confidence': results['confidence'],
